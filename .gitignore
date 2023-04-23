@@ -1,0 +1,20 @@
+# Ignore build output
+target/
+wgpu_trace/
+src/experimental.rs
+src/deprecated.rs
+rust-toolchain.toml
+
+*.csv
+*.json
+*.ods
+*.txt
+# Ignore IDE and editor files
+.idea/
+*.swp
+*.swo
+*.swn
+*.code-workspace
+.DS_Store
+.vscode/
+.cargo/
