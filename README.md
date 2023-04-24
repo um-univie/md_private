@@ -15,28 +15,37 @@ While the suite offers excellent performance in bond identification, certain cal
 
 ## Installation
 
-To install the **MD Simulation Suite**, follow these steps:
+Precompiled binaries for Linux_x86_64 and AARCH64 can be found under release
 
-1. Clone the repository:
+To compile the **MD Simulation Suite** from source, follow these steps:
+
+1. Install Rust
+
+Unix-like:
+```
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+```
+Windows:
+Under Standalone installers: https://forge.rust-lang.org/infra/other-installation-methods.html
+
+2. Clone the repository:
 
 ```
 git clone https://github.com/um-univie/md
 ```
 
-
-2. Change to the project directory:
+3. Change to the project directory:
 
 ```
 cd md
 ```
 
-3. Build the project:
+4. Build the project:
 
 ```
 cargo build --release
 ```
 
-4. The compiled binary can be found at `target/release/md`.
 
 ## Precompiled Binaries
 
