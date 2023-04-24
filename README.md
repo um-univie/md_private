@@ -39,7 +39,7 @@ git clone https://github.com/um-univie/MD-Simulation-Suite
 3. Change to the project directory:
 
 ```
-cd md
+cd MD-Simulation-Suite
 ```
 
 4. Build the project:
