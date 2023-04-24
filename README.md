@@ -7,7 +7,12 @@
 - Efficient bond identification
 - Modular design for better flexibility in calculations
 - Angle calculations
-- Pure Rust implementation for enhanced performance
+
+Todo:
+- Toppar parsing
+- Velocity verlet
+- Improper dihedrals 
+- Potential functions
 
 ## Performance Considerations
 
