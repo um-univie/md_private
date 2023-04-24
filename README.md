@@ -15,9 +15,11 @@ While the suite offers excellent performance in bond identification, certain cal
 
 ## Installation
 
-Precompiled binaries for Linux_x86_64 and AARCH64 can be found under release
+## Precompiled Binaries
 
-To compile the **MD Simulation Suite** from source, follow these steps:
+The **MD Simulation Suite** has been developed on the ARM architecture. Nonetheless precompiled binaries for all major platforms can be found in the [Releases](https://github.com/your_username/md_simulation_suite/releases) section of the GitHub repository.
+
+## Compile from source
 
 1. Install Rust
 
@@ -31,7 +33,7 @@ Under Standalone installers: https://forge.rust-lang.org/infra/other-installatio
 2. Clone the repository:
 
 ```
-git clone https://github.com/um-univie/md
+git clone https://github.com/um-univie/MD-Simulation-Suite
 ```
 
 3. Change to the project directory:
@@ -46,10 +48,6 @@ cd md
 cargo build --release
 ```
 
-
-## Precompiled Binaries
-
-The **MD Simulation Suite** has been developed on the ARM architecture. Nonetheless precompiled binaries for all major platforms can be found in the [Releases](https://github.com/your_username/md_simulation_suite/releases) section of the GitHub repository.
 
 ## Usage
 
