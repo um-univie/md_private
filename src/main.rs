@@ -1,6 +1,7 @@
 extern crate md;
-use md::*;
 mod renderer;
+use md::*;
+use renderer::render;
 use std::path::Path;
 
 fn main() {

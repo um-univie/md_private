@@ -18,3 +18,4 @@ rust-toolchain.toml
 .DS_Store
 .vscode/
 .cargo/
+flamegraph.svg

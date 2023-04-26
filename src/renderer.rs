@@ -5,15 +5,19 @@ use bevy_panorbit_camera::{PanOrbitCamera, PanOrbitCameraPlugin};
 #[derive(Component)]
 struct Shape;
 
+pub fn render(pdb_path: &str) {
+    let mut molecularsystem = MolecularSystem::from_pdb(pdb_path);
+    molecularsystem.find_bonds(2.0);
+    run(molecularsystem);
+}
+
 pub fn run(molecules: MolecularSystem) {
     App::new()
         .add_plugins(DefaultPlugins.set(WindowPlugin {
             primary_window: Some(Window {
                 title: "MD Simulation Suite".into(),
                 present_mode: PresentMode::AutoVsync,
-                // Tells wasm to resize the window according to the available canvas
                 fit_canvas_to_parent: true,
-                // Tells wasm not to override default event handling, like F5, Ctrl+R etc.
                 prevent_default_event_handling: false,
                 ..default()
             }),
@@ -31,7 +35,7 @@ fn setup(
     mut materials: ResMut<Assets<StandardMaterial>>,
     molecularsystem: Res<MolecularSystem>,
 ) {
-    let material = materials.add(StandardMaterial::default().into());
+    let material = materials.add(StandardMaterial::default());
     let shape = meshes.add(Mesh::from(shape::UVSphere {
         radius: 0.3,
         sectors: 20,
@@ -62,13 +66,12 @@ fn setup(
             commands.spawn(PbrBundle {
                 mesh: cylinder.clone(),
                 material: material.clone(),
-                transform: transform,
+                transform,
                 ..default()
             });
         }
     }
     let center = molecularsystem.center().to_vec3();
-    println!("{:?}", center);
     commands.spawn((
         Camera3dBundle::default(),
         PanOrbitCamera {

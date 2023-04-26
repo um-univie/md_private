@@ -1,21 +1,19 @@
 mod renderer;
 use bevy::prelude::*;
-use csv::Writer;
-use kdtree::distance::squared_euclidean;
-use kdtree::KdTree;
+use itertools::Itertools;
+use kdtree::{distance::squared_euclidean, KdTree};
 use ndarray::{s, Array2, Axis};
 use phf::phf_map;
 use rand::Rng;
 use rand_distr::Gamma;
 use rayon::prelude::*;
 use regex::Regex;
-use std::io::{self, BufRead};
-use std::num::ParseFloatError;
-use std::ops::{Add, AddAssign, Div, Mul, MulAssign, Sub};
-use std::path::Path;
 use std::{
     fs::{self, File},
-    io::{BufWriter, Write},
+    io::{self, BufRead, BufWriter, Write},
+    num::ParseFloatError,
+    ops::{Add, AddAssign, Div, Mul, MulAssign, Sub},
+    path::Path,
 };
 
 // Perfect hash function for the standard atomic_weight, based on the NIST dataset: https://physics.nist.gov/cgi-bin/Compositions/stand_alone.pl?ele=&isotype=some
@@ -141,17 +139,14 @@ static ATOMIC_RADII: phf::Map<&'static str, f32> = phf_map! {
 /// ```
 /// use md::Vector;
 ///
-/// fn main() {
-///     let v1 = Vector::new(1.0, 2.0, 3.0);
-///     let v2 = Vector::new(4.0, 5.0, 6.0);
-///
-///     let v3 = v1 + v2;
-///     let v4 = v1 * 2.0;
-///     let v5 = v1 / 2.0;
-///     println!("Vector sum: {:?}", v3);
-///     println!("Vector scalar multiplication: {:?}", v3);
-///     println!("Vector scalar division: {:?}", v3);
-/// }
+/// let v1 = Vector::new(1.0, 2.0, 3.0);
+/// let v2 = Vector::new(4.0, 5.0, 6.0);
+/// let v3 = v1 + v2;
+/// let v4 = v1 * 2.0;
+/// let v5 = v1 / 2.0;
+/// println!("Vector sum: {:?}", v3);
+/// println!("Vector scalar multiplication: {:?}", v3);
+/// println!("Vector scalar division: {:?}", v3);
 /// ```
 #[derive(Debug, PartialEq, Clone, Copy)]
 pub struct Vector {
@@ -175,6 +170,7 @@ pub struct Molecule {
     pub bonds: Vec<(usize, usize)>,
     pub bond_angles: Vec<((usize, usize, usize), f32)>,
     pub dihedral_angles: Vec<((usize, usize, usize, usize), f32)>,
+    pub neighbors: Vec<Vec<(f32, usize)>>,
 }
 #[derive(Debug, Resource)]
 pub struct MolecularSystem {
@@ -246,7 +242,7 @@ impl MulAssign<f32> for Vector {
     }
 }
 
-impl Vector {
+impl Default for Vector {
     /// Creates a default `Vector` being the zero vector
     ///
     /// # Panics
@@ -258,16 +254,16 @@ impl Vector {
     /// ```
     /// use md::Vector;
     ///
-    /// fn main() {
-    ///     let v = Vector::default();
-    ///     println!("Vector: {:?}", v);
-    ///     assert_eq!(v.length(),0.0)
-    /// }
+    /// let v = Vector::default();
+    /// println!("Vector: {:?}", v);
+    /// assert_eq!(v.length(),0.0)
     /// ```
-    ///
-    pub fn default() -> Vector {
+    fn default() -> Vector {
         Vector::new(0.0, 0.0, 0.0)
     }
+}
+
+impl Vector {
     /// Creates a `Vector` from an array of 3 elements, representing the x, y, and z components.
     ///
     /// # Panics
@@ -279,13 +275,10 @@ impl Vector {
     /// ```
     /// use md::Vector;
     ///
-    /// fn main() {
-    ///     let array = [1.0, 2.0, 3.0];
-    ///     let v = Vector::from_vec(&array);
-    ///     println!("Vector: {:?}", v);
-    /// }
+    /// let array = [1.0, 2.0, 3.0];
+    /// let v = Vector::from_vec(&array);
+    /// println!("Vector: {:?}", v);
     /// ```
-    ///
     pub fn from_vec(array: &[f32; 3]) -> Vector {
         Vector {
             x: array[0],
@@ -304,12 +297,9 @@ impl Vector {
     /// ```
     /// use md::Vector;
     ///
-    /// fn main() {
-    ///     let v = Vector::new(1.0, 2.0, 3.0);
-    ///     println!("Vector: {:?}", v);
-    /// }
+    /// let v = Vector::new(1.0, 2.0, 3.0);
+    /// println!("Vector: {:?}", v);
     /// ```
-    ///
     pub fn new(x: f32, y: f32, z: f32) -> Self {
         Self { x, y, z }
     }
@@ -333,23 +323,18 @@ impl Vector {
     /// ```
     /// use md::Vector;
     ///
-    /// fn main() {
-    ///     let v1 = Vector::new(1.0, 2.0, 3.0);
-    ///     let v2 = Vector::new(4.0, 5.0, 6.0);
+    /// let v1 = Vector::new(1.0, 1.0, 1.0);
+    /// let v2 = Vector::new(1.0, 1.0, -1.0);
     ///
-    ///     let v_diff = v1.difference(&v2);
-    ///     println!("Vector difference: {:?}", v_diff);
-    /// }
+    /// let v_diff = v1.difference(&v2);
+    /// assert_eq!(v_diff, Vector::new(0.0, 0.0, 2.0));
+    /// assert_eq!(v_diff.length(), 2.0);
     /// ```
     pub fn difference(&self, other: &Self) -> Self {
         let dx = self.x - other.x;
         let dy = self.y - other.y;
         let dz = self.z - other.z;
-        Self {
-            x: dx,
-            y: dy,
-            z: dz,
-        }
+        Self::new(dx, dy, dz)
     }
     /// Calculates the length of a vector.
     ///
@@ -362,11 +347,9 @@ impl Vector {
     /// ```
     /// use md::Vector;
     ///
-    /// fn main() {
     ///     let v = Vector::new(1.0, 1.0, 1.0);
     ///     println!("Vector: {:?}", v.length());
     ///     assert_eq!(v.length(), 3.0_f32.sqrt())
-    /// }
     ///
     /// ```
     pub fn length(&self) -> f32 {
@@ -383,11 +366,9 @@ impl Vector {
     /// ```
     /// use md::Vector;
     ///
-    /// fn main() {
-    ///     let v1 = Vector::new(1.0, 2.0, 3.0);
-    ///     let v2 = Vector::new(4.0, 5.0, 6.0);
-    ///     println!("Vector: {:?}", v1.dot(&v2));
-    /// }
+    /// let v1 = Vector::new(1.0, 2.0, 3.0);
+    /// let v2 = Vector::new(4.0, 5.0, 6.0);
+    /// println!("Vector: {:?}", v1.dot(&v2));
     ///
     /// ```
     pub fn dot(&self, other: &Self) -> f32 {
@@ -404,21 +385,18 @@ impl Vector {
     /// ```
     /// use md::Vector;
     ///
-    /// fn main() {
-    ///     let v1 = Vector::new(1.0, 2.0, 3.0);
-    ///     let v2 = Vector::new(4.0, 5.0, 6.0);
-    ///     println!("Vector: {:?}", v1.distance(&v2));
-    /// }
+    /// let v1 = Vector::new(1.0, 2.0, 3.0);
+    /// let v2 = Vector::new(4.0, 5.0, 6.0);
+    /// println!("Vector: {:?}", v1.distance(&v2));
     ///
     /// ```
     pub fn distance(&self, other: &Self) -> f32 {
-        self.difference(&other).length()
+        self.difference(other).length()
     }
     /// Documentation
     pub fn distance_squared(&self, other: &Self) -> f32 {
-        self.difference(&other).x.powi(2)
-            + self.difference(&other).y.powi(2)
-            + self.difference(&other).z.powi(2)
+        let difference = *other - *self;
+        difference.x.powi(2) + difference.y.powi(2) + difference.z.powi(2)
     }
     /// Generates a random unit vector
     ///
@@ -431,12 +409,9 @@ impl Vector {
     /// ```
     /// use md::Vector;
     ///
-    /// fn main() {
-    ///     let v = Vector::random_unit_vector();
-    ///     println!("Vector: {:?}", v);
-    ///     assert_eq!(v.length().ceil(),1.0)
-    /// }
-    ///
+    /// let v = Vector::random_unit_vector();
+    /// println!("Vector: {:?}", v);
+    /// assert_eq!(v.length().ceil(),1.0)
     /// ```
     ///
     pub fn random_unit_vector() -> Self {
@@ -461,12 +436,9 @@ impl Vector {
     /// ```
     /// use md::Vector;
     ///
-    /// fn main() {
-    ///     let vec1 = Vector::x();
-    ///     let vec2 = Vector::y();
-    ///     assert_eq!(vec1.cross(&vec2),Vector::z())
-    /// }
-    ///
+    /// let vec1 = Vector::x();
+    /// let vec2 = Vector::y();
+    /// assert_eq!(vec1.cross(&vec2),Vector::z())
     /// ```
     pub fn cross(&self, other: &Self) -> Self {
         Self {
@@ -493,9 +465,8 @@ impl Vector {
         if lengths_product == 0.0 {
             0.0
         } else {
-            let angle_cosine = (&self.dot(other) / (lengths_product)).clamp(-1.0, 1.0);
-            let angle = angle_cosine.acos();
-            angle
+            let angle_cosine = (self.dot(other) / (lengths_product)).clamp(-1.0, 1.0);
+            angle_cosine.acos()
         }
     }
     /// Calculates a normal vector for a given input vector
@@ -508,11 +479,9 @@ impl Vector {
     /// ```
     /// use md::Vector;
     ///
-    /// fn main() {
-    ///     let vec1 = Vector::new(1.0,2.0,3.0);
-    ///     assert_eq!(vec1.normalize().length().ceil(),1.0)
-    /// }
-    ///
+    /// let vec1 = Vector::new(1.0,2.0,3.0);
+    /// assert_eq!(vec1.normalize().length().ceil(),1.0)
+    /// ```
     pub fn normalize(&self) -> Self {
         if self.length() == 0.0 {
             *self
@@ -529,12 +498,10 @@ impl Vector {
     /// ```
     /// use md::Vector;
     ///
-    /// fn main() {
-    ///     let start_point = Vector::new(1.0,0.0,0.0);
-    ///     let middle_point = Vector::new(0.0,0.0,0.0);
-    ///     let end_point = Vector::new(0.0,1.0,0.0);
-    ///     assert_eq!(start_point.angle_between_points(&middle_point,&end_point),1.5707964);
-    /// }
+    /// let start_point = Vector::new(1.0,0.0,0.0);
+    /// let middle_point = Vector::new(0.0,0.0,0.0);
+    /// let end_point = Vector::new(0.0,1.0,0.0);
+    /// assert_eq!(start_point.angle_between_points(&middle_point,&end_point),1.5707964);
     /// ```
     pub fn angle_between_points(&self, middle_point: &Vector, end_point: &Vector) -> f32 {
         let v1 = *middle_point - *self;
@@ -550,13 +517,11 @@ impl Vector {
         let rotation = Quat::from_axis_angle(axis.to_vec3(), angle);
         let position = *self + direction / 2.0;
 
-        let transform = Transform {
+        Transform {
             translation: position.to_vec3(),
             rotation,
             scale: Vec3::ONE,
-        };
-
-        transform
+        }
     }
     pub fn to_tuple(&self) -> (f32, f32, f32) {
         (self.x, self.y, self.z)
@@ -572,14 +537,48 @@ impl Vector {
     }
 }
 
-impl Atom {
-    pub fn default() -> Atom {
+impl Default for Atom {
+    fn default() -> Atom {
         Atom {
             name: "C".to_string(),
             atom_type: "Ca".to_string(),
             position: Vector::default(),
             velocity_vector: Vector::default(),
         }
+    }
+}
+
+impl Atom {
+    //fn force(&self, other: &Atom) {
+    //    let distance = self.distance_squared(&other);
+    //    match distance {
+    //        distance if distance < 4.0 => self.morse_potential(&other,distance),
+    //        distance if distance < 9.0 => self.lennard_jones_force(&other,distance),
+    //        distance if distance < 16.0 => self.coulomb_force(&other,distance),
+    //        _ => 0.0,
+    //        }
+    //    self.velocity_vector += force;
+    //}
+
+    //pub fn coulomb_force(&self,other: &Atom,distance_squared: f32)  -> f32 {
+    //    self.charge() * other.charge() / distance_squared
+    //}
+
+    pub fn is_bonded(&self, other: &Self, threshold: f32) -> bool {
+        ((self.get_atomic_radius() + other.get_atomic_radius()) * 1.2).powi(2) > threshold
+    }
+    /// INCOMPLETE
+    /// Calculates the force between two atoms using the Lennard-Jones potential.
+    /// Still needs a lookup table for K and the equilibrium distance.
+    pub fn morse_potential(&self, _other: &Atom, distance_squared: f32) -> f32 {
+        let distance = distance_squared.sqrt();
+        let equilibrium_distance = 1.0; // Angstrom
+        let k = 1.0; // kcal /(mol*Angstrom^2)
+        let _energy = k * (distance - equilibrium_distance).powi(2);
+        todo!("Implement morse potential")
+    }
+    pub fn lennard_jones_potential() {
+        unimplemented!()
     }
     /// Calculates the kinetic energy of an atom.
     ///
@@ -591,25 +590,46 @@ impl Atom {
     /// ```
     /// use md::Atom;
     ///
-    /// fn main() {
     ///     let temperature = 200.0; // Kelvin
     ///     let mut atom1 = Atom::default();
     ///     atom1.random_velocity_vector(temperature);
     ///     println!("{}",atom1.kinetic_energy())
-    ///    }
+    /// ```
     pub fn kinetic_energy(&self) -> f32 {
         0.5 * self.mass() * self.velocity_vector.length().powi(2)
     }
     /// Calculates the distance between two atoms.
     ///
-    /// # Parameters
+    /// # Panics
     /// * 'self' - A reference to the current atom.
     /// * 'other' - A reference to the other atom.
     ///
     /// # Returns
     /// The distance between the two atoms as a 64-bit floating-point number.
+    ///
     pub fn distance(&self, other: &Atom) -> f32 {
         self.position.distance(&other.position)
+    }
+    /// Calculates the squared distance between two atoms saving computation time.
+    ///
+    /// # Panics
+    ///
+    /// This function does not panic.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use md::*;
+    ///
+    ///     let mut atom1 = Atom::default();
+    ///     let mut atom2 = Atom::default();
+    ///     atom1.position = Vector::new(1.0,0.0,0.0);
+    ///     atom2.position = Vector::new(0.0,0.0,0.0);
+    ///     assert_eq!(atom1.distance_squared(&atom2),1.0);
+    ///
+    ///
+    pub fn distance_squared(&self, other: &Atom) -> f32 {
+        self.position.distance_squared(&other.position)
     }
     /// Calculates the potential energy of a diatomic system using the harmonic oscillator model.
     ///
@@ -626,7 +646,7 @@ impl Atom {
         force_constant: f32,
         equilibrium_distance: f32,
     ) -> f32 {
-        0.5 * force_constant * (self.distance(&other) - equilibrium_distance).powi(2)
+        0.5 * force_constant * (self.distance(other) - equilibrium_distance).powi(2)
     }
     /// Calculates the Hamiltonian for two atoms, considering their kinetic energies and potential energy.
     ///
@@ -642,21 +662,17 @@ impl Atom {
     /// ```
     /// use md::{Atom, Vector};
     ///
-    /// fn main() {
-    ///     let atom1 = Atom {position: Vector::new(0.0, 0.0, 0.0), velocity_vector: Vector::new(1.0, 1.0, 1.0), ..Atom::default()};
-    ///     let atom2 = Atom {position: Vector::new(1.0, 1.0, 1.0), velocity_vector: Vector::new(-1.0, -1.0, -1.0), ..Atom::default()};
-    ///
-    ///     let force_constant = 100.0; // N/m
-    ///     let equilibrium_distance = 0.1; // m
-    ///
-    ///     let hamiltonian_value = atom1.hamiltonian(&atom2, force_constant, equilibrium_distance);
-    ///     println!("Hamiltonian value: {}", hamiltonian_value);
-    /// }
+    /// let atom1 = Atom {position: Vector::new(0.0, 0.0, 0.0), velocity_vector: Vector::new(1.0, 1.0, 1.0), ..Atom::default()};
+    /// let atom2 = Atom {position: Vector::new(1.0, 1.0, 1.0), velocity_vector: Vector::new(-1.0, -1.0, -1.0), ..Atom::default()};
+    /// let force_constant = 100.0; // N/m
+    /// let equilibrium_distance = 0.1; // m
+    /// let hamiltonian_value = atom1.hamiltonian(&atom2, force_constant, equilibrium_distance);
+    /// println!("Hamiltonian value: {}", hamiltonian_value);
     /// ```
     pub fn hamiltonian(&self, other: &Atom, force_constant: f32, equilibrium_distance: f32) -> f32 {
         self.kinetic_energy()
             + other.kinetic_energy()
-            + self.potential_energy(&other, force_constant, equilibrium_distance)
+            + self.potential_energy(other, force_constant, equilibrium_distance)
     }
     pub fn mass(&self) -> f32 {
         *ATOMIC_MASSES.get(&self.name).unwrap()
@@ -675,7 +691,7 @@ impl Atom {
         let scale = 2.0 * sigma.powi(2);
         let gamma = Gamma::new(shape, scale).unwrap();
         let mut rng = rand::thread_rng();
-        let velocity = rng.sample(&gamma);
+        let velocity = rng.sample(gamma);
         self.velocity_vector = Vector::random_unit_vector() * velocity
     }
 }
@@ -687,17 +703,15 @@ impl MolecularSystem {
 
         let mut atom_groups: Vec<Vec<String>> = vec![Vec::new()];
 
-        for line in reader.lines() {
-            if let Ok(line) = line {
-                if line.starts_with("ATOM") || line.starts_with("HETATM") {
-                    atom_groups.last_mut().unwrap().push(line);
-                } else if line.starts_with("TER") {
-                    atom_groups.push(Vec::new());
-                } else if line.starts_with("ENDMDL") {
-                    break;
-                } else {
-                    continue;
-                }
+        for line in reader.lines().flatten() {
+            if line.starts_with("ATOM") || line.starts_with("HETATM") {
+                atom_groups.last_mut().unwrap().push(line);
+            } else if line.starts_with("TER") {
+                atom_groups.push(Vec::new());
+            } else if line.starts_with("ENDMDL") {
+                break;
+            } else {
+                continue;
             }
         }
         let path = path.as_ref().to_str().unwrap();
@@ -710,12 +724,7 @@ impl MolecularSystem {
                             .par_iter()
                             .map(|line| extract_atom_pdb(line).expect("Could not parse Atom"))
                             .collect();
-                        Molecule {
-                            atoms,
-                            bonds: Vec::new(),
-                            bond_angles: Vec::new(),
-                            dihedral_angles: Vec::new(),
-                        }
+                        Molecule::from_atoms(atoms)
                     })
                     .collect(),
             }
@@ -728,12 +737,7 @@ impl MolecularSystem {
                             .par_iter()
                             .map(|line| extract_atom_cif(line).expect("Could not parse Atom"))
                             .collect();
-                        Molecule {
-                            atoms,
-                            bonds: Vec::new(),
-                            bond_angles: Vec::new(),
-                            dihedral_angles: Vec::new(),
-                        }
+                        Molecule::from_atoms(atoms)
                     })
                     .collect(),
             }
@@ -755,10 +759,21 @@ impl MolecularSystem {
         }
         sum / count
     }
+    pub fn find_neighbors(&mut self, threshold: f32) {
+        self.molecules
+            .iter_mut()
+            .for_each(|molecule| molecule.find_neighbors(threshold))
+    }
     pub fn find_bonds(&mut self, threshold: f32) {
         self.molecules
-            .par_iter_mut()
+            .iter_mut()
             .for_each(|molecule| molecule.find_bonds(threshold))
+    }
+
+    pub fn kiddo_find_neighbors(&mut self, threshold: f32) {
+        self.molecules
+            .iter_mut()
+            .for_each(|molecule| molecule.kiddo_find_neighbors(threshold))
     }
     pub fn number_of_atoms(&self) -> usize {
         self.molecules
@@ -784,40 +799,57 @@ impl MolecularSystem {
             .map(|molecule| molecule.dihedral_angles.len())
             .sum()
     }
-    pub fn identify_angles(&mut self) {
+    pub fn find_angles(&mut self) {
         self.molecules
-            .par_iter_mut()
-            .for_each(|molecule| molecule.identify_angles())
+            .iter_mut()
+            .for_each(|molecule| molecule.find_angles())
     }
-    pub fn identify_dihedrals(&mut self) {
+    pub fn find_dihedrals(&mut self) {
+        self.molecules
+            .iter_mut()
+            .for_each(|molecule| molecule.find_dihedrals())
+    }
+    pub fn par_find_dihedrals(&mut self) {
         self.molecules
             .par_iter_mut()
-            .for_each(|molecule| molecule.identify_dihedrals())
+            .for_each(|molecule| molecule.par_find_dihedrals())
     }
 }
 
-impl Molecule {
-    pub fn default() -> Molecule {
+impl Default for Molecule {
+    fn default() -> Molecule {
         Molecule {
             atoms: vec![Atom::default()],
             bonds: vec![],
             bond_angles: vec![],
             dihedral_angles: vec![],
+            neighbors: vec![],
         }
     }
-    /// Creates a new molecule from a list of atoms
+}
+
+impl Molecule {
+    fn from_atoms(atoms: Vec<Atom>) -> Self {
+        let dataset_length = atoms.len();
+        Molecule {
+            atoms,
+            bonds: Vec::with_capacity(dataset_length),
+            bond_angles: Vec::with_capacity(dataset_length * 2),
+            dihedral_angles: Vec::with_capacity(dataset_length * 2),
+            neighbors: Vec::with_capacity(dataset_length),
+        }
+    }
+    /// Creates a new molecule from an xyz file
     ///
     /// # Panics
-    /// Function panics if the list of atoms is empty or if the file cannot be opened
+    /// Function panics if the file cannot be opened or the file is empty
     ///
     /// # Examples
     /// ```
     /// use md::*;
     ///
-    /// fn main() {
-    ///    let molecule = Molecule::from_xyz("tests/ethane.xyz");
-    ///     assert_eq!(molecule.atoms.len(), 8);
-    /// }
+    /// let molecule = Molecule::from_xyz("tests/ethane.xyz");
+    /// assert_eq!(molecule.atoms.len(), 8);
     /// ```
     pub fn from_xyz(filepath: &str) -> Molecule {
         let file = File::open(filepath).expect("Could not open file");
@@ -843,11 +875,13 @@ impl Molecule {
                 }
             })
             .collect::<Vec<Atom>>();
+        let dataset_length = atoms.len();
         Molecule {
             atoms,
-            bonds: vec![],
-            bond_angles: vec![],
-            dihedral_angles: vec![],
+            bonds: Vec::with_capacity(dataset_length),
+            bond_angles: Vec::with_capacity(dataset_length * 2),
+            dihedral_angles: Vec::with_capacity(dataset_length * 2),
+            neighbors: Vec::new(),
         }
     }
     pub fn find_bonds_from_distance_matrix(&mut self) {
@@ -877,48 +911,115 @@ impl Molecule {
             .collect();
         self.bonds = bonds;
     }
-    pub fn find_bonds(&mut self, threshold: f32) {
-        let mut kdtree = KdTree::new(3);
+
+    pub fn create_kdtree(&self) -> KdTree<f32, usize, [f32; 3]> {
+        let dataset_length = self.atoms.len();
+        let mut kdtree = KdTree::with_capacity(3, dataset_length);
         for (i, atom) in self.atoms.iter().enumerate() {
             kdtree
                 .add([atom.position.x, atom.position.y, atom.position.z], i)
                 .unwrap();
         }
+        kdtree
+    }
+    pub fn find_neighbors(&mut self, threshold: f32) {
         let threshold_squared = threshold.powi(2);
-        let bonds = self
-            .atoms
+        let kdtree = self.create_kdtree();
+        self.atoms
             .par_iter()
-            .enumerate()
-            .map(|(atom_index, atom)| {
-                let neighbors = kdtree
+            .map(|atom| {
+                kdtree
                     .within(
                         &[atom.position.x, atom.position.y, atom.position.z],
                         threshold_squared,
                         &squared_euclidean,
                     )
-                    .expect("Problem with the kdtree search");
-                let mut bonds = Vec::with_capacity(neighbors.len());
-                for (distance, neighbor_atom_index) in neighbors {
-                    if atom_index < *neighbor_atom_index {
-                        let neighbor_atom = &self.atoms[*neighbor_atom_index];
-                        let bond_distance = *ATOMIC_RADII
-                            .get(&atom.name)
-                            .expect(&format!("Atom type not found: {}", atom.name))
-                            + *ATOMIC_RADII
-                                .get(&neighbor_atom.name)
-                                .expect(&format!("Atom type not found: {}", neighbor_atom.name));
-                        // adding a safety margin of 20 % here to not miss any bonds
-                        let bond_distance_squared = (bond_distance * 1.2).powi(2);
-                        if distance <= bond_distance_squared {
-                            bonds.push((atom_index, *neighbor_atom_index))
-                        }
-                    }
-                }
-                bonds
+                    .expect("Problem with the kdtree search")
+                    .iter()
+                    .map(|&(distance_squared, neighbor_atom_index)| {
+                        (distance_squared, *neighbor_atom_index)
+                    })
+                    .collect::<Vec<(f32, usize)>>()
             })
-            .flatten()
-            .collect();
-        self.bonds = bonds;
+            .collect_into_vec(&mut self.neighbors);
+    }
+
+    pub fn build_kiddo_tree(&self) -> kiddo::KdTree<f32, 3> {
+        let mut tree: kiddo::KdTree<f32, 3> = kiddo::KdTree::with_capacity(self.atoms.len());
+        for (index, atom) in self.atoms.iter().enumerate() {
+            tree.add(&atom.position.to_array(), index);
+        }
+        tree
+    }
+
+    pub fn kiddo_find_neighbors(&mut self, threshold: f32) {
+       let threshold_squared = threshold.powi(2);
+       let kdtree = self.build_kiddo_tree();
+       self.atoms
+           .par_iter()
+           .map(|atom| {
+               kdtree
+                   .within(
+                       &[atom.position.x, atom.position.y, atom.position.z],
+                       threshold_squared,
+                       &kiddo::float::distance::squared_euclidean,
+                   )
+                   .iter()
+                   .map(|neighbour| {
+                       (neighbour.distance, neighbour.item)
+                   })
+                   .collect::<Vec<(f32, usize)>>()
+           })
+           .collect_into_vec(&mut self.neighbors);
+    }
+    pub fn find_bonds(&mut self, threshold: f32) {
+        if self.neighbors.is_empty() {
+            self.kiddo_find_neighbors(threshold)
+        }
+        self.bonds = self
+            .neighbors
+            .par_iter()
+            .flat_map(|neighbors| {
+                let atom_index = neighbors[0].1;
+                neighbors
+                    .iter()
+                    .filter_map(|&(distance_squared, neighbor_atom_index)| {
+                        if atom_index < neighbor_atom_index {
+                            let atom = &self.atoms[atom_index];
+                            let neighbor_atom = &self.atoms[neighbor_atom_index];
+                            let bond_distance = *ATOMIC_RADII
+                                .get(&atom.name)
+                                .unwrap_or_else(|| panic!("Atom type not found: {}", atom.name))
+                                + *ATOMIC_RADII.get(&neighbor_atom.name).unwrap_or_else(|| {
+                                    panic!("Atom type not found: {}", neighbor_atom.name)
+                                });
+                            // adding a safety margin of 20 % here to not miss any bonds
+                            let bond_distance_squared = (bond_distance * 1.2).powi(2);
+                            if distance_squared <= bond_distance_squared {
+                                Some((atom_index, neighbor_atom_index))
+                            } else {
+                                None
+                            }
+                        } else {
+                            None
+                        }
+                    })
+                    .collect::<Vec<(usize, usize)>>()
+            })
+            .collect::<Vec<(usize, usize)>>();
+    }
+
+    // TODO: this function is not working properly yet
+    pub fn dihedral_potential(&self) -> f32 {
+        //let mut potential = 0.0;
+        //for dihedral in &self.dihedral_angles {
+        //    let angle = dihedral.angle();
+        //    let k = dihedral;
+        //    let n = dihedral;
+        //    potential += k * (1.0 - (angle.cos() * n as f32)).powi(2);
+        //}
+        //potential
+        todo!();
     }
 
     pub fn center(&self) -> Vector {
@@ -942,12 +1043,10 @@ impl Molecule {
     /// ```
     /// use md::Molecule;
     ///
-    /// fn main() {
-    ///     let mut molecule = Molecule::default();
-    ///     let temperature = 298.0; // K
-    ///     molecule.random_velocities(temperature);
-    ///     println!("{:?}",molecule)
-    /// }
+    /// let mut molecule = Molecule::default();
+    /// let temperature = 298.0; // K
+    /// molecule.random_velocities(temperature);
+    /// println!("{:?}",molecule)
     /// ```
     pub fn random_velocities(&mut self, temperature: f32) {
         // Error handling
@@ -972,13 +1071,11 @@ impl Molecule {
     /// ```
     /// use md::{Molecule,Vector,Atom};
     ///
-    /// fn main() {
-    ///     let molecule = Molecule {
-    ///                             atoms: vec![Atom {position: Vector::new(0.0,0.0,0.0),..Atom::default()},Atom{position: Vector::new(0.0,1.0,0.0),..Atom::default()},Atom{position: Vector::new(1.0,0.0,0.0),..Atom::default()}],
-    ///                             ..Molecule::default()};
-    ///     let distance_matrix = molecule.distance_matrix();
-    ///     println!("{}",distance_matrix)
-    /// }
+    /// let molecule = Molecule {
+    ///                         atoms: vec![Atom {position: Vector::new(0.0,0.0,0.0),..Atom::default()},Atom{position: Vector::new(0.0,1.0,0.0),..Atom::default()},Atom{position: Vector::new(1.0,0.0,0.0),..Atom::default()}],
+    ///                         ..Molecule::default()};
+    /// let distance_matrix = molecule.distance_matrix();
+    /// println!("{}",distance_matrix)
     /// ```
     pub fn distance_matrix(&self) -> Array2<f32> {
         let length = self.atoms.len();
@@ -996,36 +1093,55 @@ impl Molecule {
         matrix
     }
     //not getting all angles
-    pub fn identify_angles(&mut self) {
-        if self.bonds.is_empty() {
-            self.find_bonds(2.0)
+    /// This function finds all angles in a molecule
+    ///
+    /// # Panics
+    ///
+    /// This function does not panic
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use md::{Molecule,Vector,Atom};
+    ///
+    ///    let mut molecule = Molecule::from_xyz("tests/ethane.xyz");
+    ///    molecule.find_angles();
+    ///    println!("{:?}",molecule.bond_angles);
+    ///    assert_eq!(molecule.bond_angles.len(),12);
+    /// ```
+    pub fn find_angles(&mut self) {
+        if self.neighbors.is_empty() {
+            self.find_neighbors(2.0)
         }
-        let mut angles = Vec::with_capacity(self.atoms.len() * 2);
-
-        for &(atom1, atom2) in self.bonds.iter() {
-            for &(atom3, atom4) in self.bonds.iter() {
-                if atom1 == atom3 && atom2 == atom4 {
-                    continue;
-                }
-                if let Some((a, b, c)) = match (atom1, atom2, atom3, atom4) {
-                    (a, b, c, d) if a == c => Some((b, a, d)),
-                    (a, b, c, d) if a == d => Some((b, a, c)),
-                    (a, b, c, d) if b == c => Some((a, b, d)),
-                    (a, b, c, d) if c == d => Some((a, c, b)),
-                    _ => None,
-                } {
-                    if c > a {
-                        let point1 = &self.atoms[a].position;
-                        let point2 = &self.atoms[b].position;
-                        let point3 = &self.atoms[c].position;
-                        let angle = point1.angle_between_points(point2, point3);
-                        angles.push(((a, b, c), angle))
+        self.bond_angles = self
+            .neighbors
+            .par_iter()
+            .flat_map(|neighbors| {
+                let central_atom = neighbors[0].1;
+                let mut local_bond_angles = Vec::with_capacity(12);
+                neighbors[1..].iter().combinations(2).for_each(|slice| {
+                    let (distance1, index1) = *slice[0];
+                    let (distance2, index2) = *slice[1];
+                    let bond1 = self.atoms[central_atom].is_bonded(&self.atoms[index1], distance1);
+                    let bond2 = self.atoms[central_atom].is_bonded(&self.atoms[index2], distance2);
+                    if bond1 && bond2 {
+                        let angle = self.atoms[index1].position.angle_between_points(
+                            &self.atoms[central_atom].position,
+                            &self.atoms[index2].position,
+                        );
+                        local_bond_angles.push(((index1, central_atom, index2), angle));
                     }
-                }
-            }
-        }
-        self.bond_angles = angles;
+                });
+                local_bond_angles
+            })
+            .collect();
     }
+    //fn find_angle(atoms: &[usize;3]) -> (usize,usize,usize) {
+    //    let mut angle = (0,0,0);
+    //    let mut min = 0.0;
+    //
+    //    angle
+    //}
 
     /// This function identifies all dihedral angles in a molecule
     ///
@@ -1035,42 +1151,82 @@ impl Molecule {
     /// # Example
     ///
     /// ```
-    ///use md::*;
+    /// use md::*;
     ///
-    ///fn main() {
-    ///    let mut molecule = Molecule::from_xyz("tests/ethane.xyz");
-    ///
-    ///    molecule.identify_dihedrals();
-    ///
-    ///    assert_eq!(molecule.dihedral_angles.len(), 9, "Incorrect number of dihedral angles identified");
-    ///    assert_eq!(molecule.dihedral_angles[0], ((3, 0, 1, 7), 1.0472065), "Incorrect dihedral angle identified");
-    ///}
+    /// let mut molecule = Molecule::from_xyz("tests/ethane.xyz");
+    ///  
+    /// molecule.find_dihedrals();
+    /// println!("{:?}", molecule.bonds);
+    /// println!("{:?}", molecule.bond_angles);
+    /// println!("{:?}", molecule.dihedral_angles);
+    /// assert_eq!(molecule.dihedral_angles.len(), 9);
+    /// assert_eq!(molecule.dihedral_angles[0].1, 1.0472065);
     ///```
-    pub fn identify_dihedrals(&mut self) {
+    pub fn find_dihedrals(&mut self) {
         if self.bond_angles.is_empty() {
-            self.identify_angles()
+            self.find_angles()
+        }
+        if self.bonds.is_empty() {
+            self.find_bonds(2.0)
         }
         let mut dihedrals = Vec::with_capacity(self.bond_angles.len());
 
         for (angle, _) in &self.bond_angles {
             for &(bond0, bond1) in &self.bonds {
-                let (a, b, c) = *angle;
-                if bond0 == b || bond1 == b {
+                let (atom1, atom2, atom3) = *angle;
+                if bond0 == atom2 || bond1 == atom2 {
                     continue;
                 }
-                let (b1, b2, b3, b4) = match (a, c) {
-                    _ if a == bond0 => (bond1, bond0, b, c),
-                    _ if a == bond1 => (bond0, bond1, b, c),
-                    _ if c == bond0 => (a, b, bond1, bond0),
-                    _ if c == bond1 => (a, b, bond0, bond1),
+                let (b1, b2, b3, b4) = match (atom1, atom2) {
+                    _ if atom1 == bond0 => (bond1, atom1, atom2, atom3),
+                    _ if atom1 == bond1 => (bond0, atom1, atom2, atom3),
+                    _ if atom3 == bond0 => (atom1, atom2, atom3, bond1),
+                    _ if atom3 == bond1 => (atom1, atom2, atom3, bond0),
                     _ => continue,
                 };
-
                 if b1 < b4 {
-                    dihedrals.push(((b1, b2, b3, b4), self.dihedral_angle(&(b1, b2, b3, b4))));
+                    dihedrals.push(((b1, b2, b3, b4), self.dihedral_angle(&(b1, b2, b3, b4))))
                 }
             }
         }
+        self.dihedral_angles = dihedrals;
+    }
+
+    pub fn par_find_dihedrals(&mut self) {
+        if self.bond_angles.is_empty() {
+            self.find_angles()
+        }
+        if self.bonds.is_empty() {
+            self.find_bonds(2.0)
+        }
+
+        let dihedrals = self
+            .bond_angles
+            .par_iter()
+            .flat_map(|angle| {
+                self.bonds
+                    .iter()
+                    .filter_map(|&(bond0, bond1)| {
+                        let ((atom1, atom2, atom3), _) = *angle;
+                        if bond0 == atom2 || bond1 == atom2 {
+                            return None;
+                        }
+                        let dihedral = match (atom1, atom2) {
+                            _ if atom1 == bond0 => (bond1, atom1, atom2, atom3),
+                            _ if atom1 == bond1 => (bond0, atom1, atom2, atom3),
+                            _ if atom3 == bond0 => (atom1, atom2, atom3, bond1),
+                            _ if atom3 == bond1 => (atom1, atom2, atom3, bond0),
+                            _ => return None,
+                        };
+                        if dihedral.0 < dihedral.3 {
+                            Some((dihedral, self.dihedral_angle(&dihedral)))
+                        } else {
+                            None
+                        }
+                    })
+                    .collect::<Vec<((usize, usize, usize, usize), f32)>>()
+            })
+            .collect::<Vec<((usize, usize, usize, usize), f32)>>();
         self.dihedral_angles = dihedrals;
     }
     /// This function calculates the dihedral angle for all atoms
@@ -1082,11 +1238,9 @@ impl Molecule {
     ///
     /// ```
     /// use md::*;
-    /// fn main() {
     ///     let mut molecule = Molecule::from_xyz("tests/ethane.xyz");
-    ///     molecule.identify_dihedrals();
-    ///     assert_eq!(molecule.dihedral_angles[0].1, 1.0472065, "Incorrect dihedral angle identified");
-    /// }
+    ///     molecule.find_dihedrals();
+    /// ```
     pub fn dihedral_angle(&self, dihedral: &(usize, usize, usize, usize)) -> f32 {
         let (a, b, c, d) = (
             self.atoms[dihedral.0].position,
@@ -1117,15 +1271,13 @@ impl Molecule {
 /// ```
 /// use md::*;
 ///
-/// fn main() {
-///     let line =  "ATOM   2073  CB  ALA B 128      11.390 -11.172  71.797  1.00 16.79           C";
-///     let atom = extract_atom_pdb(line).unwrap();
-///     assert_eq!(atom.position.x, 11.390, "Incorrect x coordinate");
-///     assert_eq!(atom.position.y, -11.172, "Incorrect y coordinate");
-///     assert_eq!(atom.position.z, 71.797, "Incorrect z coordinate");
-///     assert_eq!(atom.name, "C", "Incorrect atom name");
-///     assert_eq!(atom.atom_type, "CB", "Incorrect atom type");
-/// }
+/// let line =  "ATOM   2073  CB  ALA B 128      11.390 -11.172  71.797  1.00 16.79           C";
+/// let atom = extract_atom_pdb(line).unwrap();
+/// assert_eq!(atom.position.x, 11.390, "Incorrect x coordinate");
+/// assert_eq!(atom.position.y, -11.172, "Incorrect y coordinate");
+/// assert_eq!(atom.position.z, 71.797, "Incorrect z coordinate");
+/// assert_eq!(atom.name, "C", "Incorrect atom name");
+/// assert_eq!(atom.atom_type, "CB", "Incorrect atom type");
 /// ```
 pub fn extract_atom_pdb(line: &str) -> Result<Atom, ParseFloatError> {
     let position = Vector {
@@ -1153,15 +1305,13 @@ pub fn extract_atom_pdb(line: &str) -> Result<Atom, ParseFloatError> {
 /// ```
 /// use md::*;
 ///
-/// fn main() {
-///     let line = "ATOM   1    N N   . GLN A 1 1   ? 201.310 198.892 131.429 1.00 70.25  ? 1   GLN A N   1";
-///     let atom = extract_atom_cif(line).unwrap();
-///     assert_eq!(atom.position.x, 201.310, "Incorrect x coordinate");
-///     assert_eq!(atom.position.y, 198.892, "Incorrect y coordinate");
-///     assert_eq!(atom.position.z, 131.429, "Incorrect z coordinate");
-///     assert_eq!(atom.name, "N", "Incorrect atom name");
-///     assert_eq!(atom.atom_type, "N", "Incorrect atom type");
-/// }
+/// let line = "ATOM   1    N N   . GLN A 1 1   ? 201.310 198.892 131.429 1.00 70.25  ? 1   GLN A N   1";
+/// let atom = extract_atom_cif(line).unwrap();
+/// assert_eq!(atom.position.x, 201.310, "Incorrect x coordinate");
+/// assert_eq!(atom.position.y, 198.892, "Incorrect y coordinate");
+/// assert_eq!(atom.position.z, 131.429, "Incorrect z coordinate");
+/// assert_eq!(atom.name, "N", "Incorrect atom name");
+/// assert_eq!(atom.atom_type, "N", "Incorrect atom type");
 /// ```
 pub fn extract_atom_cif(line: &str) -> Result<Atom, ParseFloatError> {
     let fields: Vec<&str> = line.split_whitespace().collect();
@@ -1180,28 +1330,11 @@ pub fn extract_atom_cif(line: &str) -> Result<Atom, ParseFloatError> {
     })
 }
 
-pub fn render(pdb_path: &str) {
-    let mut molecularsystem = MolecularSystem::from_pdb(&pdb_path);
-    molecularsystem.find_bonds(2.0);
-    renderer::run(molecularsystem);
-}
-
 pub fn analyze<P: AsRef<Path>>(path: P, is_dir: bool) {
     let pdb_path = path;
+
     if is_dir {
         let paths = fs::read_dir(pdb_path).unwrap();
-        let mut writer = Writer::from_path("result.csv").unwrap();
-        writer
-            .write_record([
-                "Name",
-                "#Molecules",
-                "#atoms",
-                "Number of bonds",
-                "Number of bond angles",
-                "Number of dihedral angles",
-                "Time total",
-            ])
-            .unwrap();
         for path in paths {
             let filename = path.unwrap().path();
             if let Some(extension) = filename.extension() {
@@ -1212,27 +1345,7 @@ pub fn analyze<P: AsRef<Path>>(path: P, is_dir: bool) {
                 continue;
             };
             println!("Analyzing {}", filename.to_str().unwrap());
-            let molecularsystem = analyze_file(&filename);
-            let start_time = std::time::Instant::now();
-
-            let time_elapsed5 = start_time.elapsed();
-            let number_of_molecules = molecularsystem.molecules.len();
-            let number_of_bonds = molecularsystem.number_of_bonds();
-            let number_of_atoms = molecularsystem.number_of_atoms() as u32;
-            let number_of_bond_angles = molecularsystem.number_of_bond_angles();
-            let number_of_dihedral_angles = molecularsystem.number_of_dihedral_angles();
-
-            writer
-                .write_record(&[
-                    filename.to_str().unwrap(),
-                    &number_of_molecules.to_string(),
-                    &number_of_atoms.to_string(),
-                    &number_of_bonds.to_string(),
-                    &number_of_bond_angles.to_string(),
-                    &number_of_dihedral_angles.to_string(),
-                    &time_elapsed5.as_millis().to_string(),
-                ])
-                .unwrap();
+            analyze_file(&filename);
         }
     } else {
         analyze_file(&pdb_path);
@@ -1241,42 +1354,53 @@ pub fn analyze<P: AsRef<Path>>(path: P, is_dir: bool) {
 
 pub fn analyze_file<P: AsRef<Path>>(path: P) -> MolecularSystem {
     let pdb_path = path.as_ref();
-    let file = File::create(&format!("{}_result.txt", pdb_path.to_str().unwrap())).unwrap();
+    let file = File::create(&format!(
+        "{}_result.txt",
+        pdb_path.to_str().expect("Path is not valid unicode!")
+    ))
+    .expect("File directory path does not exist!");
     let mut writer2 = BufWriter::new(file);
-    let mut molecularsystem = MolecularSystem::from_pdb(&pdb_path);
+    let mut molecularsystem = MolecularSystem::from_pdb(pdb_path);
     if molecularsystem
         .molecules
         .last()
         .expect("No molecules in file")
         .atoms
-        .len()
-        == 0
+        .is_empty()
     {
         molecularsystem.molecules.pop();
     }
+    molecularsystem.kiddo_find_neighbors(2.0);
     molecularsystem.find_bonds(2.0);
-    molecularsystem.identify_angles();
-    molecularsystem.identify_dihedrals();
+    molecularsystem.find_angles();
+    molecularsystem.par_find_dihedrals();
+
+    println!("Summary");
+    println!("{:?}", molecularsystem.molecules.len());
+    println!("{:?}", molecularsystem.number_of_atoms());
+    println!("{:?}", molecularsystem.number_of_bonds());
+    println!("{:?}", molecularsystem.number_of_bond_angles());
+    println!("{:?}", molecularsystem.number_of_dihedral_angles());
 
     for molecule in &molecularsystem.molecules {
-        writeln!(writer2, "MOL").unwrap();
+        writeln!(writer2, "MOL").expect("Could not write MOL to file");
         for (index, atom) in molecule.atoms.iter().enumerate() {
             let line = format!(
                 "ATOM {} {} {} {} {} {}",
                 index, atom.name, atom.atom_type, atom.position.x, atom.position.y, atom.position.z
             );
-            writeln!(writer2, "{}", line).unwrap();
+            writeln!(writer2, "{line}").expect("Could not write ATOM to file");
         }
         for bonds in &molecule.bonds {
             let line = format!("BOND {} {}", bonds.0, bonds.1);
-            writeln!(writer2, "{}", line).unwrap();
+            writeln!(writer2, "{line}").expect("Could not write BOND to file")
         }
         for bond_angle in &molecule.bond_angles {
             let line = format!(
                 "BOND_ANGLE {} {} {} {}",
                 bond_angle.0 .0, bond_angle.0 .1, bond_angle.0 .2, bond_angle.1
             );
-            writeln!(writer2, "{}", line).unwrap();
+            writeln!(writer2, "{line}").expect("Could not write BOND_ANGLE to file");
         }
         for dihedral_angle in &molecule.dihedral_angles {
             let line = format!(
@@ -1287,9 +1411,9 @@ pub fn analyze_file<P: AsRef<Path>>(path: P) -> MolecularSystem {
                 dihedral_angle.0 .3,
                 dihedral_angle.1
             );
-            writeln!(writer2, "{}", line).unwrap();
+            writeln!(writer2, "{}", line).expect("Could not write DIHEDRAL_ANGLE to file");
         }
-        writeln!(writer2, "ENDMOL").unwrap();
+        writeln!(writer2, "ENDMOL").expect("Could not write ENDMOL to file");
     }
     molecularsystem
 }
@@ -1371,7 +1495,7 @@ mod tests {
             ..Molecule::default()
         };
         molecule.find_bonds(2.0);
-        molecule.identify_angles();
+        molecule.find_angles();
         println!("{:?}", molecule.bond_angles);
     }
 }
