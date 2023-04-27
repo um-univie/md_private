@@ -24,4 +24,4 @@ kiddo = "2.0.1"
 
 
 [profile.release]
-debug = true
+lto = true
