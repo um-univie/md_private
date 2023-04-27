@@ -52,12 +52,6 @@ cd MD-Simulation-Suite
 ```
 cargo build --release
 ```
-In this project Link-time-optimization is enabled which makes compilation take a lot longer but results in better performance. To disable it, delete the lines:
-```
-[profile.release]
-lto = true
-```
-in the Cargo.toml file.
 
 ## Usage
 
