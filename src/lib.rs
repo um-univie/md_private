@@ -1360,6 +1360,7 @@ pub fn analyze_file<P: AsRef<Path>>(path: P) -> MolecularSystem {
     ))
     .expect("File directory path does not exist!");
     let mut writer2 = BufWriter::new(file);
+    let start_time = std::time::Instant::now();
     let mut molecularsystem = MolecularSystem::from_pdb(pdb_path);
     if molecularsystem
         .molecules
@@ -1376,11 +1377,7 @@ pub fn analyze_file<P: AsRef<Path>>(path: P) -> MolecularSystem {
     molecularsystem.par_find_dihedrals();
 
     println!("Summary");
-    println!("{:?}", molecularsystem.molecules.len());
-    println!("{:?}", molecularsystem.number_of_atoms());
-    println!("{:?}", molecularsystem.number_of_bonds());
-    println!("{:?}", molecularsystem.number_of_bond_angles());
-    println!("{:?}", molecularsystem.number_of_dihedral_angles());
+    println!("Done in {:?}", start_time.elapsed());
 
     for molecule in &molecularsystem.molecules {
         writeln!(writer2, "MOL").expect("Could not write MOL to file");
