@@ -19,3 +19,4 @@ rust-toolchain.toml
 .vscode/
 .cargo/
 flamegraph.svg
+./pdb/

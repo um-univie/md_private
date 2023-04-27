@@ -51,24 +51,24 @@ fn setup(
         .into(),
     );
     for molecule in &molecularsystem.molecules {
-        for atom in &molecule.atoms {
+        for (index,atom) in molecule.atoms.iter().enumerate() {
             commands.spawn(PbrBundle {
                 mesh: shape.clone(),
                 material: material.clone(),
                 transform: Transform::from_translation(atom.position.to_vec3()),
                 ..default()
             });
-        }
-        for bond in &molecule.bonds {
-            let transform = molecule.atoms[bond.0]
-                .position
-                .vector_rotation_transform(&molecule.atoms[bond.1].position);
-            commands.spawn(PbrBundle {
-                mesh: cylinder.clone(),
-                material: material.clone(),
-                transform,
-                ..default()
-            });
+            for &bond in &atom.bonds {
+                if bond > index {
+                    let transform = atom.position.vector_rotation_transform(&molecule.atoms[bond].position);
+                    commands.spawn(PbrBundle {
+                        mesh: cylinder.clone(),
+                        material: material.clone(),
+                        transform,
+                        ..default()
+                    });
+                }
+            }
         }
     }
     let center = molecularsystem.center().to_vec3();
