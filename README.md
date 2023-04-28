@@ -38,13 +38,13 @@ Under Standalone installers: https://forge.rust-lang.org/infra/other-installatio
 2. Clone the repository:
 
 ```
-git clone https://github.com/um-univie/MD-Simulation-Suite
+git clone https://github.com/um-univie/md_private
 ```
 
 3. Change to the project directory:
 
 ```
-cd MD-Simulation-Suite
+cd md_private
 ```
 
 4. Build the project:
